@@ -291,9 +291,21 @@ class SimpleM3FDDataset(data.Dataset):
 
         rgb_tensor = self.to_tensor(Image.fromarray(rgb_img))
         ir_tensor = self.to_tensor(Image.fromarray(ir_img[:,:,0]))
-        
+
         rgb_tensor = self.rgb_normalize(rgb_tensor)
         ir_tensor = self.ir_normalize(ir_tensor)
+
+        # IRコントラスト・明るさ調整（訓練時のみ）
+        if self.augmentation:
+            # コントラスト調整（IR - 強化版）
+            if random.random() < 0.5:  # 0.3 -> 0.5
+                contrast_factor = random.uniform(0.7, 1.4)  # 0.8-1.2 -> 0.7-1.4
+                ir_tensor = TF.adjust_contrast(ir_tensor, contrast_factor)
+
+            # IRの明るさ調整（追加）
+            if random.random() < 0.4:
+                brightness_factor = random.uniform(0.8, 1.2)
+                ir_tensor = TF.adjust_brightness(ir_tensor, brightness_factor)
         
         final_targets = []
         if len(labels) > 0:

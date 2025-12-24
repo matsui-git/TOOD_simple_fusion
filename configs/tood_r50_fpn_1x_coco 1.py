@@ -52,14 +52,16 @@ model = dict(
             activated=True,
             gamma=2.0,
             alpha=0.25,
-            loss_weight=1.0),
+            loss_weight=1.0,
+            class_weight=[1.0, 2.5, 1.0]),  # Bicycleに2.5倍のウェイト
         loss_cls=dict(
             type='QualityFocalLoss',
             use_sigmoid=True,
             activated=True,
             beta=2.0,
-            loss_weight=1.0),
-        loss_bbox=dict(type='GIoULoss', loss_weight=2.0)),
+            loss_weight=1.0,
+            class_weight=[1.0, 2.5, 1.0]),  # Bicycleに2.5倍のウェイト
+        loss_bbox=dict(type='GIoULoss', loss_weight=2.5)),  # 2.0 -> 2.5 (Recall向上)
     # Training and testing settings
     train_cfg=dict(
         initial_epoch=4,
