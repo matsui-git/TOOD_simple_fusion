@@ -264,17 +264,17 @@ class IntegratedModelTrainer:
         try:
             # バッチの先頭の1枚だけを使用
             idx = 0
-            
+
             # 1. 重みのヒストグラム（分布）
             if 'rgb_weight' in outputs and 'ir_weight' in outputs:
                 self.tb_writer.add_histogram('Weights/RGB_Distribution', outputs['rgb_weight'], epoch)
                 self.tb_writer.add_histogram('Weights/Thermal_Distribution', outputs['ir_weight'], epoch)
-                
+
                 # 重みマップの画像化 (ヒートマップ風にグレースケールで)
                 # (B, 1, H, W) -> (1, H, W)
                 rgb_w_map = outputs['rgb_weight'][idx].detach().cpu()
                 ir_w_map = outputs['ir_weight'][idx].detach().cpu()
-                
+
                 # TensorBoardは (C, H, W) を期待するが、重みは0-1なのでそのまま画像として扱える
                 self.tb_writer.add_image('Fusion/Weight_Map_RGB', rgb_w_map, epoch)
                 self.tb_writer.add_image('Fusion/Weight_Map_Thermal', ir_w_map, epoch)
@@ -297,20 +297,20 @@ class IntegratedModelTrainer:
             # 3. 融合画像と検出結果
             if 'yolo_input' in outputs:
                 fused_tensor = outputs['yolo_input'][idx].detach().cpu() # (3, H, W) 0-1
-                
+
                 # OpenCVで描画するために Numpy (H, W, 3) に変換
                 img_numpy = (fused_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8).copy()
                 # RGB -> BGR (OpenCV用)
                 img_numpy = cv2.cvtColor(img_numpy, cv2.COLOR_RGB2BGR)
-                
+
                 # ターゲット（正解ラベル）の描画
                 targets = batch['detection_gt'][idx]
                 H, W = img_numpy.shape[:2]
-                
+
                 # 有効なターゲットのみ
                 valid_mask = targets[:, 0] >= 0
                 valid_targets = targets[valid_mask]
-                
+
                 for t in valid_targets:
                     cls, cx, cy, w, h = t.tolist()
                     # YOLO形式 (center_x, center_y, w, h) -> 左上・右下座標
@@ -318,10 +318,10 @@ class IntegratedModelTrainer:
                     y1 = int((cy - h/2) * H)
                     x2 = int((cx + w/2) * W)
                     y2 = int((cy + h/2) * H)
-                    
+
                     # 緑の枠を描画
                     cv2.rectangle(img_numpy, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    
+
                     # クラス名描画（オプション）
                     label = self.class_names[int(cls)] if int(cls) < len(self.class_names) else str(int(cls))
                     cv2.putText(img_numpy, label, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -329,11 +329,129 @@ class IntegratedModelTrainer:
                 # TensorBoard用に再度 Tensor (C, H, W) RGB に戻す
                 img_numpy = cv2.cvtColor(img_numpy, cv2.COLOR_BGR2RGB)
                 fused_vis = torch.from_numpy(img_numpy).permute(2, 0, 1)
-                
+
                 self.tb_writer.add_image('Fusion/Result_with_BBox', fused_vis, epoch)
 
         except Exception as e:
             LOGGER.warning(f"Failed to log images to TensorBoard: {e}")
+
+    def _save_epoch_visualizations(self, epoch):
+        """
+        10エポックごとに検証データから5サンプルの可視化画像を保存
+        """
+        try:
+            model = self.ema.ema if self.ema else self.model
+            model.eval()
+
+            # 検証データローダーから最初のバッチを取得
+            val_iter = iter(self.val_loader)
+            batch = next(val_iter)
+
+            if batch is None:
+                LOGGER.warning(f"Could not get validation batch for visualization at epoch {epoch}")
+                return
+
+            ir = batch['ir_image'].to(self.device)
+            rgb = batch['rgb_image'].to(self.device)
+            targets = batch['detection_gt'].to(self.device)
+
+            # Forward pass to get fusion outputs
+            with torch.no_grad():
+                outputs = model(ir, rgb, targets, training=False)
+                predictions = model.detect(ir, rgb)
+
+            # Save visualization images
+            self.save_visualization_images(batch, outputs, predictions, epoch)
+
+            model.train()
+
+        except Exception as e:
+            LOGGER.warning(f"Failed to create epoch visualizations: {e}")
+
+    def save_visualization_images(self, batch, outputs, predictions, epoch):
+        """
+        10エポックごとに5種類の画像をファイルとして保存
+        - 融合画像にpred_boxとgt_boxが描画されたもの
+        - RGB重みマップ
+        - Thermal重みマップ
+        """
+        if epoch % 10 != 0:
+            return
+
+        try:
+            # 保存先ディレクトリを作成
+            vis_dir = self.save_dir / 'visualizations' / f'epoch_{epoch}'
+            vis_dir.mkdir(parents=True, exist_ok=True)
+
+            # バッチから最大5サンプルを取得
+            num_samples = min(5, batch['ir_image'].size(0))
+
+            for sample_idx in range(num_samples):
+                # 1. 融合画像の取得と変換
+                if 'yolo_input' not in outputs:
+                    continue
+
+                fused_tensor = outputs['yolo_input'][sample_idx].detach().cpu()  # (3, H, W) 0-1
+                img_numpy = (fused_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8).copy()
+                img_numpy = cv2.cvtColor(img_numpy, cv2.COLOR_RGB2BGR)
+                H, W = img_numpy.shape[:2]
+
+                # 2. GT Boxを緑色で描画
+                targets = batch['detection_gt'][sample_idx]
+                valid_mask = targets[:, 0] >= 0
+                valid_targets = targets[valid_mask]
+
+                for t in valid_targets:
+                    cls, cx, cy, w, h = t.tolist()
+                    x1 = int((cx - w/2) * W)
+                    y1 = int((cy - h/2) * H)
+                    x2 = int((cx + w/2) * W)
+                    y2 = int((cy + h/2) * H)
+
+                    # 緑色でGT Boxを描画
+                    cv2.rectangle(img_numpy, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    label = f"GT:{self.class_names[int(cls)]}" if int(cls) < len(self.class_names) else f"GT:{int(cls)}"
+                    cv2.putText(img_numpy, label, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                # 3. Pred Boxを赤色で描画
+                if predictions and sample_idx < len(predictions):
+                    pred = predictions[sample_idx]
+                    for p in pred:
+                        if len(p) >= 6:
+                            x1, y1, x2, y2, conf, cls = p[:6]
+                            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
+                            # 赤色でPred Boxを描画
+                            cv2.rectangle(img_numpy, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            label = f"P:{self.class_names[int(cls)]} {conf:.2f}" if int(cls) < len(self.class_names) else f"P:{int(cls)} {conf:.2f}"
+                            cv2.putText(img_numpy, label, (x1, y2+15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+                # 融合画像（BBox付き）を保存
+                fusion_path = vis_dir / f'sample_{sample_idx}_fusion_boxes.png'
+                cv2.imwrite(str(fusion_path), img_numpy)
+
+                # 4. RGB重みマップを保存
+                if 'rgb_weight' in outputs:
+                    rgb_w_map = outputs['rgb_weight'][sample_idx].detach().cpu()  # (1, H, W)
+                    rgb_w_np = (rgb_w_map.squeeze().numpy() * 255).astype(np.uint8)
+                    # ヒートマップとして可視化
+                    rgb_w_colored = cv2.applyColorMap(rgb_w_np, cv2.COLORMAP_JET)
+                    rgb_w_path = vis_dir / f'sample_{sample_idx}_rgb_weight.png'
+                    cv2.imwrite(str(rgb_w_path), rgb_w_colored)
+
+                # 5. Thermal重みマップを保存
+                if 'ir_weight' in outputs:
+                    ir_w_map = outputs['ir_weight'][sample_idx].detach().cpu()  # (1, H, W)
+                    ir_w_np = (ir_w_map.squeeze().numpy() * 255).astype(np.uint8)
+                    # ヒートマップとして可視化
+                    ir_w_colored = cv2.applyColorMap(ir_w_np, cv2.COLORMAP_JET)
+                    ir_w_path = vis_dir / f'sample_{sample_idx}_thermal_weight.png'
+                    cv2.imwrite(str(ir_w_path), ir_w_colored)
+
+            LOGGER.info(f'Visualization images saved to {vis_dir}')
+
+        except Exception as e:
+            LOGGER.warning(f"Failed to save visualization images: {e}")
 
     def train(self):
         epochs = self.config['training']['epochs']
@@ -410,9 +528,13 @@ class IntegratedModelTrainer:
             if RANK in {-1, 0}:
                 results = self.validate()
                 mp, mr, map50, map_50_95, val_loss, class_ap_dict = results
-                
+
                 self.results.append((epoch, [mp, mr, map50, map_50_95, val_loss]))
                 self.per_class_results.append((epoch, class_ap_dict))
+
+                # 10エポックごとに可視化画像を保存
+                if epoch % 10 == 0:
+                    self._save_epoch_visualizations(epoch)
                 
                 # ========== 毎エポックmAPを出力 ==========
                 LOGGER.info('')
