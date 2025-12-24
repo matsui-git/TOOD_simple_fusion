@@ -1,0 +1,102 @@
+# データセット設定 v2
+dataset:
+  # 画像サイズ
+  img_width: 640
+  img_height: 512
+  
+  # クラス設定
+  num_classes: 3
+  class_names: ['person', 'bicycle', 'car']
+  
+  # データパス
+  train:
+    rgb_dir: '../FLIR/images/train/rgb'
+    ir_dir: '../FLIR/images/train/thermal'
+    label_dir: '../FLIR/labels/train/rgb'
+    max_samples: 100
+  
+  validation:
+    rgb_dir: '../FLIR/images/val/rgb'
+    ir_dir: '../FLIR/images/val/thermal'
+    label_dir: '../FLIR/labels/val/rgb'
+    max_samples: 20
+
+  
+  # データローダー設定
+  batch_size: 4
+  num_workers: 0
+  pin_memory: true
+  
+  # データ拡張設定（新規追加）
+  transform_prob: 0.5
+  augmentation:
+    flip_prob: 0.5           # 水平反転
+    scale_range: [0.8, 1.2]  # スケール変換範囲
+    scale_prob: 0.5          # スケール適用確率
+    rotate_range: [-10, 10]  # 回転角度範囲（度）
+    rotate_prob: 0.3         # 回転適用確率
+    translate_range: [-0.1, 0.1]  # 平行移動範囲（画像サイズ比）
+    translate_prob: 0.3      # 平行移動適用確率
+
+# モデル設定
+model:
+  fusion_backbone: 'resnet34'
+  yolo_cfg: 'yolov5l.yaml'
+  pretrained_yolo: ./yolov5l.pt
+  fusion_loss_weight: 0.5
+  detection_loss_weight: 1.0
+
+# 訓練設定 v2
+training:
+  epochs: 100
+  
+  # 学習率設定（改善）
+  learning_rate: 0.001       # ベース学習率
+  fusion_lr: 0.0001          # Fusion Network用学習率
+  detector_lr: 0.001         # 検出器用学習率
+  min_lr: 0.000001
+  
+  # Warmup設定（新規）
+  warmup_epochs: 5
+  
+  # Phase切り替え設定（新規）
+  unfreeze_epoch: 2                    # 検出器をunfreezeするエポック
+  freeze_fusion_after_unfreeze: false    # unfreeze後にFusionをfreezeするか
+  
+  # オプティマイザ
+  optimizer: 'adamw'         # 'sgd', 'adam', 'adamw'
+  weight_decay: 0.0001
+  momentum: 0.937            # SGD用
+  
+  # Early Stopping設定（新規）
+  early_stopping:
+    patience: 15             # 改善がないエポック数
+    min_delta: 0.001         # 改善とみなす最小変化量
+  
+  # 検証・保存間隔
+  val_interval: 1
+  save_interval: 1
+  
+  # Gradient累積
+  accumulation_steps: 1
+
+test:
+  rgb_dir: '../FLIR/test/rgb'
+  ir_dir: '../FLIR/test/thermal'
+  label_dir: '../FLIR/test/labels/rgb'
+  max_samples: null
+
+# 推論設定
+inference:
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  max_detections: 100
+
+# その他
+output_dir: './runs/TOOD_attention_model_v2'
+seed: 42
+
+# MMDetection設定
+use_mmdet: true
+mmdet_config: 'configs/tood_r50_fpn_1x_coco 1.py'
+mmdet_checkpoint: 'configs/tood_r50_fpn_1x_coco_20211210_103425-20e20746.pth'
