@@ -59,11 +59,18 @@ class SimpleFusionNetwork(nn.Module):
     """
     シンプルな融合ネットワーク
     IR画像(1ch) + RGB画像(3ch) -> 融合重みマップ -> 融合画像(1ch)
+    融合損失: SSIM + Gradient + Entropy
     """
-    def __init__(self, backbone_name: str = 'resnet34', freeze_weights: bool = False):
+    def __init__(self, backbone_name: str = 'resnet34', freeze_weights: bool = False,
+                 ssim_weight: float = 1.0, gradient_weight: float = 1.0, entropy_weight: float = 0.1):
         super().__init__()
         self.backbone_name = backbone_name
         self.freeze_weights = freeze_weights
+
+        # 融合損失の重み
+        self.ssim_weight = ssim_weight
+        self.gradient_weight = gradient_weight
+        self.entropy_weight = entropy_weight
         
         # バックボーン: 2チャンネル入力(IR gray + RGB gray)
         self.backbone = timm.create_model(
@@ -164,30 +171,147 @@ class SimpleFusionNetwork(nn.Module):
 
         ir_weight, rgb_weight = weights[:, 0:1, :, :], weights[:, 1:2, :, :]
         fused_image = ir_weight * ir_norm + rgb_weight * rgb_norm
-        
-        # 【修正】smoothness_lossは中間解像度の特徴マップで計算（計算量削減）
-        smoothness_loss = self._calculate_smoothness_loss(
-            weights_mid[:, 0:1, :, :], 
-            weights_mid[:, 1:2, :, :]
-        )
-        balance_loss = torch.abs(ir_weight.mean() - 0.5) + torch.abs(rgb_weight.mean() - 0.5)
-        fusion_quality_loss = 0.01 * smoothness_loss + 0.1 * balance_loss
-        
+
+        # 融合損失: SSIM + Gradient + Entropy
+        ssim_loss = self._calculate_ssim_loss(fused_image, ir_norm, rgb_norm)
+        gradient_loss = self._calculate_gradient_loss(fused_image, ir_norm, rgb_norm)
+        entropy_loss = self._calculate_entropy_loss(fused_image)
+
+        # 重み付け合計（設定ファイルから読み込んだ係数を使用）
+        # SSIM: 構造保存、Gradient: エッジ保存、Entropy: 情報量最大化（負値で最大化）
+        fusion_quality_loss = (self.ssim_weight * ssim_loss +
+                               self.gradient_weight * gradient_loss +
+                               self.entropy_weight * entropy_loss)
+
         return {
             'fused_image': fused_image,
             'ir_weight': ir_weight,
             'rgb_weight': rgb_weight,
-            'fusion_loss': fusion_quality_loss
+            'fusion_loss': fusion_quality_loss,
+            'ssim_loss': ssim_loss,
+            'gradient_loss': gradient_loss,
+            'entropy_loss': entropy_loss
         }
-    
-    def _calculate_smoothness_loss(self, ir_weight, rgb_weight):
+
+    def _calculate_ssim_loss(self, fused: torch.Tensor, ir: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
+        """
+        SSIM Loss: 融合画像がIR/RGB両方の構造を保持しているか評価
+        Loss = 1 - (SSIM(fused, IR) + SSIM(fused, RGB)) / 2
+        """
         try:
-            return (torch.mean(torch.abs(ir_weight[:, :, :, 1:] - ir_weight[:, :, :, :-1])) +
-                    torch.mean(torch.abs(ir_weight[:, :, 1:, :] - ir_weight[:, :, :-1, :])) +
-                    torch.mean(torch.abs(rgb_weight[:, :, :, 1:] - rgb_weight[:, :, :, :-1])) +
-                    torch.mean(torch.abs(rgb_weight[:, :, 1:, :] - rgb_weight[:, :, :-1, :])))
+            ssim_ir = self._ssim(fused, ir)
+            ssim_rgb = self._ssim(fused, rgb)
+            # SSIMは1が最良なので、1から引いて損失にする
+            return 1.0 - (ssim_ir + ssim_rgb) / 2
         except:
-            return torch.tensor(0.0, device=ir_weight.device)
+            return torch.tensor(0.0, device=fused.device)
+
+    def _ssim(self, x: torch.Tensor, y: torch.Tensor, window_size: int = 11) -> torch.Tensor:
+        """
+        Structural Similarity Index (SSIM) の計算
+        """
+        C1 = 0.01 ** 2
+        C2 = 0.03 ** 2
+
+        # ガウシアンウィンドウの作成
+        sigma = 1.5
+        coords = torch.arange(window_size, dtype=torch.float32, device=x.device) - window_size // 2
+        g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+        g = g / g.sum()
+        window = g.unsqueeze(0) * g.unsqueeze(1)
+        window = window.unsqueeze(0).unsqueeze(0)  # (1, 1, window_size, window_size)
+
+        # パディング
+        pad = window_size // 2
+
+        # 平均
+        mu_x = F.conv2d(x, window, padding=pad)
+        mu_y = F.conv2d(y, window, padding=pad)
+
+        mu_x_sq = mu_x ** 2
+        mu_y_sq = mu_y ** 2
+        mu_xy = mu_x * mu_y
+
+        # 分散・共分散
+        sigma_x_sq = F.conv2d(x ** 2, window, padding=pad) - mu_x_sq
+        sigma_y_sq = F.conv2d(y ** 2, window, padding=pad) - mu_y_sq
+        sigma_xy = F.conv2d(x * y, window, padding=pad) - mu_xy
+
+        # SSIM
+        ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+                   ((mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2))
+
+        return ssim_map.mean()
+
+    def _calculate_gradient_loss(self, fused: torch.Tensor, ir: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
+        """
+        Gradient Loss: エッジ情報を最大限保存
+        融合画像の勾配がIR/RGBの最大勾配に近づくようにする
+        """
+        try:
+            # Sobelフィルタ
+            sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+                                   dtype=torch.float32, device=fused.device).view(1, 1, 3, 3)
+            sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
+                                   dtype=torch.float32, device=fused.device).view(1, 1, 3, 3)
+
+            # 各画像の勾配計算
+            grad_fused_x = F.conv2d(fused, sobel_x, padding=1)
+            grad_fused_y = F.conv2d(fused, sobel_y, padding=1)
+            grad_fused = torch.sqrt(grad_fused_x ** 2 + grad_fused_y ** 2 + 1e-8)
+
+            grad_ir_x = F.conv2d(ir, sobel_x, padding=1)
+            grad_ir_y = F.conv2d(ir, sobel_y, padding=1)
+            grad_ir = torch.sqrt(grad_ir_x ** 2 + grad_ir_y ** 2 + 1e-8)
+
+            grad_rgb_x = F.conv2d(rgb, sobel_x, padding=1)
+            grad_rgb_y = F.conv2d(rgb, sobel_y, padding=1)
+            grad_rgb = torch.sqrt(grad_rgb_x ** 2 + grad_rgb_y ** 2 + 1e-8)
+
+            # IR/RGBの最大勾配
+            grad_max = torch.max(grad_ir, grad_rgb)
+
+            # 融合画像の勾配が最大勾配に近づくようにする
+            return F.l1_loss(grad_fused, grad_max)
+        except:
+            return torch.tensor(0.0, device=fused.device)
+
+    def _calculate_entropy_loss(self, fused: torch.Tensor) -> torch.Tensor:
+        """
+        Entropy Loss: 融合画像の情報量を最大化
+        エントロピーを最大化したいので、負値を返す
+        """
+        try:
+            # 画像を0-1にクランプ
+            fused_clamped = torch.clamp(fused, 0, 1)
+
+            # ヒストグラムを微分可能な方法で近似
+            # ソフトヒストグラム: 各ビンへの寄与を連続的に計算
+            num_bins = 256
+            batch_size = fused_clamped.size(0)
+
+            # バッチ全体で計算
+            fused_flat = fused_clamped.view(batch_size, -1)  # (B, H*W)
+
+            # 各ピクセル値のビンへの寄与を計算
+            bin_centers = torch.linspace(0, 1, num_bins, device=fused.device)
+            sigma = 1.0 / num_bins
+
+            # (B, H*W, 1) - (1, 1, num_bins) -> (B, H*W, num_bins)
+            diff = fused_flat.unsqueeze(-1) - bin_centers.view(1, 1, -1)
+            weights = torch.exp(-0.5 * (diff / sigma) ** 2)
+
+            # 正規化してヒストグラムを得る
+            hist = weights.sum(dim=1)  # (B, num_bins)
+            hist = hist / (hist.sum(dim=1, keepdim=True) + 1e-10)
+
+            # エントロピー計算
+            entropy = -torch.sum(hist * torch.log(hist + 1e-10), dim=1)
+
+            # エントロピーを最大化したいので負値を返す
+            return -entropy.mean()
+        except:
+            return torch.tensor(0.0, device=fused.device)
 
 class FusionToYOLOAdapter(nn.Module):
     def __init__(self):
@@ -207,11 +331,23 @@ class IntegratedFusionDetectionModel(nn.Module):
         
         # 【修正箇所1】modelセクションから正しく設定を読み込むように変更
         model_config = config.get('model', {})
+
+        # 融合損失の重みを取得
+        fusion_losses_config = model_config.get('fusion_losses', {})
+        ssim_weight = fusion_losses_config.get('ssim_weight', 1.0)
+        gradient_weight = fusion_losses_config.get('gradient_weight', 1.0)
+        entropy_weight = fusion_losses_config.get('entropy_weight', 0.1)
+
         self.fusion_network = SimpleFusionNetwork(
             model_config.get('fusion_backbone', 'resnet34'),
-            freeze_weights=model_config.get('freeze_fusion_weights', False)
+            freeze_weights=model_config.get('freeze_fusion_weights', False),
+            ssim_weight=ssim_weight,
+            gradient_weight=gradient_weight,
+            entropy_weight=entropy_weight
         )
         self.fusion_to_yolo = FusionToYOLOAdapter()
+
+        logger.info(f"Fusion losses: SSIM={ssim_weight}, Gradient={gradient_weight}, Entropy={entropy_weight}")
         
         # デバッグ出力
         print(f"DEBUG: MMDET_AVAILABLE = {MMDET_AVAILABLE}")

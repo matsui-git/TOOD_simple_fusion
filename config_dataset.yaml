@@ -56,6 +56,12 @@ model:
   fusion_loss_weight: 1.0  # 0.5 -> 1.0 (融合を強化)
   detection_loss_weight: 1.0
 
+  # 融合損失の重み（SSIM + Gradient + Entropy）
+  fusion_losses:
+    ssim_weight: 1.0       # 構造類似性（元画像の構造を保持）
+    gradient_weight: 1.0   # エッジ保存（シャープさ維持）
+    entropy_weight: 0.1    # 情報量最大化（コントラスト向上）
+
 # 訓練設定 v2
 training:
   epochs: 200

@@ -511,7 +511,14 @@ class IntegratedModelTrainer:
                 outputs = self.model(ir, rgb, targets, training=True)
                 losses = outputs['losses']
                 loss = losses.get('total_loss', torch.tensor(0.0, device=self.device))
-                
+
+                # 融合損失の詳細を記録（TensorBoard用）
+                self._last_fusion_losses = {
+                    'ssim': outputs.get('ssim_loss', torch.tensor(0.0)).item() if torch.is_tensor(outputs.get('ssim_loss')) else 0,
+                    'gradient': outputs.get('gradient_loss', torch.tensor(0.0)).item() if torch.is_tensor(outputs.get('gradient_loss')) else 0,
+                    'entropy': outputs.get('entropy_loss', torch.tensor(0.0)).item() if torch.is_tensor(outputs.get('entropy_loss')) else 0,
+                }
+
                 loss = loss / self.accumulation_steps
                 loss.backward()
 
@@ -583,7 +590,13 @@ class IntegratedModelTrainer:
                     self.tb_writer.add_scalar('train/box_loss', mloss[0], epoch)
                     self.tb_writer.add_scalar('train/cls_loss', mloss[1], epoch)
                     self.tb_writer.add_scalar('train/total_loss', mloss[2], epoch)
-                    
+
+                    # 融合損失の詳細（最後のバッチの値を記録）
+                    if hasattr(self, '_last_fusion_losses'):
+                        self.tb_writer.add_scalar('fusion/ssim_loss', self._last_fusion_losses.get('ssim', 0), epoch)
+                        self.tb_writer.add_scalar('fusion/gradient_loss', self._last_fusion_losses.get('gradient', 0), epoch)
+                        self.tb_writer.add_scalar('fusion/entropy_loss', self._last_fusion_losses.get('entropy', 0), epoch)
+
                     self.tb_writer.add_scalar('metrics/precision', mp, epoch)
                     self.tb_writer.add_scalar('metrics/recall', mr, epoch)
                     self.tb_writer.add_scalar('metrics/mAP_0.5', map50, epoch)
