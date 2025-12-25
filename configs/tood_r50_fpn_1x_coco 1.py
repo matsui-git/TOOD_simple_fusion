@@ -6,12 +6,6 @@ _base_ = []
 # Model settings
 model = dict(
     type='TOOD',
-    data_preprocessor=dict(
-        type='DetDataPreprocessor',
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
-        bgr_to_rgb=True,
-        pad_size_divisor=32),
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -52,15 +46,13 @@ model = dict(
             activated=True,
             gamma=2.0,
             alpha=0.25,
-            loss_weight=1.0,
-            class_weight=[1.0, 2.5, 1.0]),  # Bicycleに2.5倍のウェイト
+            loss_weight=1.0),
         loss_cls=dict(
             type='QualityFocalLoss',
             use_sigmoid=True,
             activated=True,
             beta=2.0,
-            loss_weight=1.0,
-            class_weight=[1.0, 2.5, 1.0]),  # Bicycleに2.5倍のウェイト
+            loss_weight=1.0),
         loss_bbox=dict(type='GIoULoss', loss_weight=2.5)),  # 2.0 -> 2.5 (Recall向上)
     # Training and testing settings
     train_cfg=dict(
@@ -79,43 +71,29 @@ model = dict(
         nms=dict(type='nms', iou_threshold=0.6),
         max_per_img=100))
 
-# Optimizer
-optim_wrapper = dict(
-    type='OptimWrapper',
-    optimizer=dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0001))
+# Optimizer (MMDet 2.x format)
+optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0001)
+optimizer_config = dict(grad_clip=None)
 
-# Training schedule
-train_cfg = dict(
-    type='EpochBasedTrainLoop',
-    max_epochs=12,
-    val_interval=1)
-
-val_cfg = dict(type='ValLoop')
-test_cfg = dict(type='TestLoop')
+# Learning rate scheduler
+lr_config = dict(
+    policy='step',
+    warmup='linear',
+    warmup_iters=500,
+    warmup_ratio=0.001,
+    step=[8, 11])
 
 # Runtime settings
-default_scope = 'mmdet'
-default_hooks = dict(
-    timer=dict(type='IterTimerHook'),
-    logger=dict(type='LoggerHook', interval=50),
-    param_scheduler=dict(type='ParamSchedulerHook'),
-    checkpoint=dict(type='CheckpointHook', interval=1),
-    sampler_seed=dict(type='DistSamplerSeedHook'),
-    visualization=dict(type='DetVisualizationHook'))
+runner = dict(type='EpochBasedRunner', max_epochs=12)
+checkpoint_config = dict(interval=1)
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+    ])
 
-env_cfg = dict(
-    cudnn_benchmark=False,
-    mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0),
-    dist_cfg=dict(backend='nccl'))
-
-vis_backends = [dict(type='LocalVisBackend')]
-visualizer = dict(
-    type='DetLocalVisualizer',
-    vis_backends=vis_backends,
-    name='visualizer')
-
-log_processor = dict(type='LogProcessor', window_size=50, by_epoch=True)
+dist_params = dict(backend='nccl')
 log_level = 'INFO'
-
 load_from = None
-resume = False
+resume_from = None
+workflow = [('train', 1)]

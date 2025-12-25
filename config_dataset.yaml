@@ -7,19 +7,24 @@ dataset:
   # クラス設定
   num_classes: 3
   class_names: ['person', 'bicycle', 'car']
+
+  # アノテーションのクラスIDオフセット
+  # 0: アノテーションが0始まり (person=0, bicycle=1, car=2)
+  # 1: アノテーションが1始まり (person=1, bicycle=2, car=3)
+  class_id_offset: 1
   
   # データパス
   train:
-    rgb_dir: '../FLIR/images/train/rgb'
-    ir_dir: '../FLIR/images/train/thermal'
-    label_dir: '../FLIR/labels/train/rgb'
-    max_samples: 100
+    rgb_dir: '../../FLIR/images/train/rgb'
+    ir_dir: '../../FLIR/images/train/thermal'
+    label_dir: '../../FLIR/labels/train/rgb'
+    max_samples: null
   
   validation:
-    rgb_dir: '../FLIR/images/val/rgb'
-    ir_dir: '../FLIR/images/val/thermal'
-    label_dir: '../FLIR/labels/val/rgb'
-    max_samples: 20
+    rgb_dir: '../../FLIR/images/val/rgb'
+    ir_dir: '../../FLIR/images/val/thermal'
+    label_dir: '../../FLIR/labels/val/rgb'
+    max_samples: null
 
   
   # データローダー設定
@@ -53,7 +58,7 @@ model:
 
 # 訓練設定 v2
 training:
-  epochs: 100
+  epochs: 200
   
   # 学習率設定（改善）
   learning_rate: 0.001       # ベース学習率
@@ -65,7 +70,7 @@ training:
   warmup_epochs: 5
   
   # Phase切り替え設定（新規）
-  unfreeze_epoch: 2                    # 検出器をunfreezeするエポック
+  unfreeze_epoch: 20                    # 検出器をunfreezeするエポック
   freeze_fusion_after_unfreeze: false    # unfreeze後にFusionをfreezeするか
   
   # オプティマイザ
@@ -95,7 +100,7 @@ test:
 inference:
   confidence_threshold: 0.15  # 0.25 -> 0.15 (Recall向上)
   iou_threshold: 0.45
-  max_detections: 100
+  max_detections: null
 
 # その他
 output_dir: './runs/TOOD_attention_model_v2'

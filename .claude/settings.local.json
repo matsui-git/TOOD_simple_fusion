@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(conda list:*)",
+      "Bash(pip install:*)",
+      "Bash(mim install:*)",
+      "Bash(conda activate:*)",
+      "Bash(conda run:*)",
+      "Bash(findstr:*)",
+      "Bash(timeout 5 echo:*)",
+      "Bash(timeout 10 echo:*)",
+      "Bash(nvcc:*)",
+      "Bash(dir /b \"C:\\\\Users\\\\tanaka-users\\\\workspace\\\\TOOD_git\\\\FLIR\\\\labels\\\\train\\\\rgb\")",
+      "Bash(dir:*)"
+    ]
+  }
+}
